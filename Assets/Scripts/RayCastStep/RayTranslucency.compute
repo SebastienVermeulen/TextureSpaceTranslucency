@@ -1,0 +1,120 @@
+﻿#pragma kernel Compute
+#define RAND_MAX 32767
+#define RENDER_DIST 2.0f
+
+///----------------------------- Input Data -----------------------------
+Texture2D _noiseTexture;
+SamplerState sampler_noiseTexture;
+StructuredBuffer<uint3> _triangles;
+StructuredBuffer<float3> _verts;
+StructuredBuffer<float3> _normals;
+float _inverseNormalStepSize;
+uint _nrOfSamples;
+
+///----------------------------- Output Data -----------------------------
+RWStructuredBuffer<float4> _randomDepth;
+RWStructuredBuffer<float4> _randomNormal;
+
+///----------------------------- Structs -----------------------------
+struct Ray
+{
+    float3 origin;
+    float3 direction;
+};
+
+///----------------------------- Raycast -----------------------------
+float3 RandomInUnitSphere(float2 id)
+{
+    return normalize(_noiseTexture.SampleLevel(sampler_noiseTexture, id, 0).rgb);
+    //return normalize(tex2D(_noiseTexture, id).rgb);
+    //return normalize(_noiseTexture.Load(uint3(id, 0)).xyz);
+}
+void RayCast(Ray ray, uint triangleID, inout float4 biggestDist)
+{
+    ///----------------------------- Data -----------------------------
+    //Triangle - Polygon corners
+    float3 vertA = _verts[_triangles[triangleID].x];
+    float3 vertB = _verts[_triangles[triangleID].y];
+    float3 vertC = _verts[_triangles[triangleID].z];
+
+    ///----------------------------- Intersection Calc -----------------------------
+    //Poly normal
+    float3 norm = normalize(cross(vertB - vertA, vertC - vertA));
+    //Float distance, hitposition
+    float dist = dot(vertA - ray.origin, norm) / dot(ray.direction, norm);
+    float3 hitPos = ray.origin + dist * ray.direction;
+    
+    dist = (dist < 0.0f) ? biggestDist.w : dist;
+    dist = (biggestDist.w < dist) ? biggestDist.w : dist;
+    
+    //Check if in triangle
+    float dotAB = dot(norm, cross(vertB - vertA, hitPos - vertA));
+    float dotBC = dot(norm, cross(vertC - vertB, hitPos - vertB));
+    float dotCA = dot(norm, cross(vertA - vertC, hitPos - vertC));
+    
+    bool AB = (dotAB >= 0) ? true : false;
+    bool BC = (dotBC >= 0) ? true : false;
+    bool CA = (dotCA >= 0) ? true : false;
+    
+    ///----------------------------- Result -----------------------------
+    if ((AB && BC && CA || !AB && !BC && !CA) && !(length(norm) <= 0.001f))
+    {
+        biggestDist.w = dist;
+        biggestDist.rgb = norm;
+    }
+    else
+    {
+        biggestDist.w = biggestDist.w;
+        biggestDist.rgb = biggestDist.rgb;
+    }
+}
+
+///----------------------------- Main compute method -----------------------------
+[numthreads(1024, 1, 1)]
+void Compute(uint3 id : SV_DispatchThreadID)
+{
+    uint numStructs = 0;
+    uint stride = 0;
+
+    float4 totalDist = 0.0f;
+    for (uint idx = 1; idx < _nrOfSamples + 1; idx++)
+    {
+        ///----------------------------- Verticies and ray -----------------------------
+        //Amount of vertecies
+        _verts.GetDimensions(numStructs, stride);
+
+        //Our Ray
+        Ray ray;
+        ray.origin = _verts[id.x] - _normals[id.x] * _inverseNormalStepSize;
+        float2 co = float2((id.x % 512) * idx * 1.752415 / 512, (id.x / 512) * idx * 2.147481 / 512);
+        //co -= floor(co);
+        ray.direction = RandomInUnitSphere(co);
+
+        ///----------------------------- Triangles -----------------------------
+        //Amount of triangles to go over
+        _triangles.GetDimensions(numStructs, stride);
+
+        ///----------------------------- Casting loop -----------------------------
+        //Go over all triangles/indecies
+        float4 dist = float4(0, 0, 0, 1.0f);
+        for (uint triangleNr = 0; triangleNr < numStructs; triangleNr++)
+        {
+            RayCast(ray, triangleNr, dist);
+        }
+        
+        if (dist.w >= 0.99999f)
+        {
+            totalDist *= (idx + 1) / idx;
+        }
+        else
+        {
+            totalDist += dist;
+        }
+    }
+    totalDist.w /= _nrOfSamples;
+    totalDist.rgb = normalize(totalDist.rgb);
+    
+    ///----------------------------- Result -----------------------------
+    _randomDepth[id.x] = float4(totalDist.w, totalDist.w, totalDist.w, 1);
+    _randomNormal[id.x] = float4(totalDist.rgb, 1);
+}
