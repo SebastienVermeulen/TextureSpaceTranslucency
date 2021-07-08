@@ -8,5 +8,5 @@
 +===============================================+
 
 Includes a basic implimentation of texture space
-translation. Sampling and rendering rendering
+translusion. Sampling and rendering rendering
 techniques are both usable. 
